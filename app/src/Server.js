@@ -2506,6 +2506,9 @@ function startServer() {
             const existingPeer = room.getPeer(socket.id);
             if (existingPeer) {
                 room.removePeer(socket.id);
+
+            // bravio: the room just shrank. Below the threshold, recording stops on its own.
+            autoRecordingCheck(room);
             }
 
             room.addPeer(new Peer(socket.id, data));
@@ -2636,6 +2639,9 @@ function startServer() {
             }
 
             handleJoinWebHook(room.id, room.getSessionId(), data.peer_info);
+
+            // bravio: the room just grew.
+            autoRecordingCheck(room);
 
             // Notify main room when a peer joins a breakout room
             if (socket.room_id.includes('_breakout_')) {
@@ -4954,6 +4960,9 @@ function startServer() {
 
             room.removePeer(socket.id);
 
+            // bravio: the room just shrank. Below the threshold, recording stops on its own.
+            autoRecordingCheck(room);
+
             room.broadCast(socket.id, 'removeMe', removeMeData(room, peer_name, isPresenter));
 
             // Notify main room when a peer leaves a breakout room
@@ -5024,6 +5033,9 @@ function startServer() {
 
             room.removePeer(socket.id);
 
+            // bravio: the room just shrank. Below the threshold, recording stops on its own.
+            autoRecordingCheck(room);
+
             room.broadCast(socket.id, 'removeMe', removeMeData(room, peer_name, isPresenter));
 
             // Clean up this peer's presenter entry immediately
@@ -5058,6 +5070,26 @@ function startServer() {
         });
 
         // Helpers
+
+        /**
+         * bravio: start and stop recording on the size of the room.
+         *
+         * A conversation is worth recording and a person sitting alone waiting is not, so the
+         * threshold is a count rather than a button. The server decides because it is the only
+         * party that knows the count; the capture still happens in the presenter's browser,
+         * because this SFU has no recorder of its own. If the presenter leaves, recording stops
+         * with them, which is a real limit and is written down rather than papered over.
+         */
+        function autoRecordingCheck(room) {
+            const from = config?.media?.recording?.autoFrom || 0;
+            if (!from || !config?.media?.recording?.enabled) return;
+            const peers = room.getPeers().size;
+            const shouldRecord = peers >= from;
+            if (shouldRecord === room.bravioAutoRecording) return;
+            room.bravioAutoRecording = shouldRecord;
+            log.info('[bravio] auto recording', { room: room.id, peers, action: shouldRecord ? 'start' : 'stop' });
+            room.sendToAll('recordingCommand', { action: shouldRecord ? 'start' : 'stop', peers });
+        }
 
         async function handleJoinWebHook(room_id, session_id, peer_info) {
             // handle WebHook

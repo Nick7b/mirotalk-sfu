@@ -794,11 +794,20 @@ class RoomClient {
             if (room.recording) this.recording = room.recording;
             if (room.recording && room.recording.recSyncServerRecording) {
                 console.log('07.1 WARNING ----> SERVER SYNC RECORDING ENABLED!', this.recording);
-                this.recording.recSyncServerRecording = localStorageSettings.rec_server;
-                if (BUTTONS.settings.tabRecording && !room.config.hostOnlyRecording) {
-                    show(roomRecordingServer);
+                // bravio: when the server forces it, the per-browser setting does not get a
+                // vote and the switch is hidden rather than shown in a state nobody may
+                // change. A control that cannot be operated is worse than no control.
+                if (room.recording.recSyncForce) {
+                    this.recording.recSyncServerRecording = true;
+                    switchServerRecording.checked = true;
+                    hide(roomRecordingServer);
+                } else {
+                    this.recording.recSyncServerRecording = localStorageSettings.rec_server;
+                    if (BUTTONS.settings.tabRecording && !room.config.hostOnlyRecording) {
+                        show(roomRecordingServer);
+                    }
+                    switchServerRecording.checked = this.recording.recSyncServerRecording;
                 }
-                switchServerRecording.checked = this.recording.recSyncServerRecording;
             }
             console.log('07.1 ----> SERVER SYNC RECORDING', this.recording);
             // ###################################################################################################
@@ -1330,6 +1339,8 @@ class RoomClient {
         this.socket.on('updateRoomModerator', this.handleUpdateRoomModeratorData);
         this.socket.on('updateRoomModeratorALL', this.handleUpdateRoomModeratorALLData);
         this.socket.on('recordingAction', this.handleRecordingActionData);
+        // bravio: the server decides when a room is worth recording, on its size.
+        this.socket.on('recordingCommand', this.handleRecordingCommand.bind(this));
         this.socket.on('endRTMP', this.handleEndRTMP);
         this.socket.on('errorRTMP', this.handleErrorRTMP);
         this.socket.on('endRTMPfromURL', this.handleEndRTMPfromURL);
@@ -4634,6 +4645,13 @@ class RoomClient {
     }
 
     exitRoom(disconnectAll = false) {
+        // bravio: stop the recording before leaving, so the file is finalised rather than
+        // abandoned mid-chunk. Upstream warns and leaves anyway, which on 4-9-2026 cost a real
+        // two minute meeting: the blobs were still in the tab and were never assembled.
+        if (this.isRecording()) {
+            console.log('[bravio] stopping the recording before leaving');
+            this.stopRecording();
+        }
         const switchDisconnectAllOnLeave = getId('switchDisconnectAllOnLeave');
         if (isPresenter && (disconnectAll || (switchDisconnectAllOnLeave && switchDisconnectAllOnLeave.checked))) {
             this.ejectAllOnLeave();
@@ -9152,6 +9170,26 @@ class RoomClient {
             peer_id: this.peer_id,
             action: action,
         });
+    }
+
+    /**
+     * bravio: start or stop because the room grew or shrank.
+     *
+     * Only the presenter acts, because the capture is a MediaRecorder in one browser and two of
+     * them would produce two files of the same conversation. That also means recording follows
+     * the presenter: if they leave, it stops, which is the honest limit of recording in a
+     * browser rather than in the SFU.
+     */
+    handleRecordingCommand(data) {
+        if (!isPresenter) return;
+        if (data.action === 'start' && !this.isRecording()) {
+            console.log('[bravio] auto recording start', data);
+            this.startRecording();
+        }
+        if (data.action === 'stop' && this.isRecording()) {
+            console.log('[bravio] auto recording stop', data);
+            this.stopRecording();
+        }
     }
 
     handleRecordingAction(data) {

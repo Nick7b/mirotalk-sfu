@@ -42,6 +42,9 @@ module.exports = class Room {
             recSyncServerToS3: (config?.integrations?.s3?.enabled && config?.media?.recording?.uploadToS3) || false,
             recSyncServerRecording: config?.media?.recording?.enabled || false,
             recSyncServerEndpoint: config?.media?.recording?.endpoint || '',
+            // bravio: see config.media.recording.force and .autoFrom.
+            recSyncForce: config?.media?.recording?.force || false,
+            recSyncAutoFrom: config?.media?.recording?.autoFrom || 0,
         };
         // ##########################
 

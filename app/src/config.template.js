@@ -213,6 +213,27 @@ module.exports = {
          */
         recording: {
             enabled: process.env.RECORDING_ENABLED === 'true',
+            /**
+             * bravio: always record to the server, never to the participant's own machine.
+             *
+             * Upstream makes server recording a per-browser setting (`rec_server` in
+             * localStorage) that each person has to find and switch on. On a fresh browser it
+             * is off, so the recording is buffered in the tab and only assembled into a
+             * download when the person presses stop. Somebody who closes the tab or leaves the
+             * meeting while recording loses the lot: measured on 4-9-2026, a real two minute
+             * meeting produced no file anywhere.
+             *
+             * With this on, the client uploads each chunk as it is produced and keeps nothing
+             * locally, so an abrupt leave still leaves a playable file on the server.
+             */
+            force: process.env.RECORDING_FORCE === 'true',
+            /**
+             * bravio: start recording once this many people are in the room, stop below it.
+             *
+             * 0 leaves it manual, which is upstream's behaviour. 2 means a conversation is
+             * recorded and somebody sitting alone in a room waiting is not.
+             */
+            autoFrom: parseInt(process.env.RECORDING_AUTO_FROM, 10) || 0,
             uploadToS3: process.env.RECORDING_UPLOAD_TO_S3 === 'true',
             endpoint: process.env.RECORDING_ENDPOINT || '',
             dir: process.env.RECORDING_DIR || '../rec',
