@@ -75,6 +75,23 @@ The delayed hide now asks the DOM who is actually hovered before hiding, which i
 of which reflow fired the event, and the ten second button-bar sweep no longer hides a bar that
 has an open menu on it.
 
+## The assistant in the room is the initiative's own
+
+MiroTalk offers ChatGPT and DeepSeek in the meeting chat. Both stay off here permanently: a model
+call from inside this container would spend money that the cockpit's ledger never sees, and that
+ledger is the point. Upstream lists them in the chat panel anyway, whatever the flag says, so a
+client on a call was looking at two buttons that could not work.
+
+`ASSISTANT_API_ENDPOINT` points that conversation at the cockpit instead, which runs the
+initiative's own assistant with its own voice, context and budget, through the one metered door it
+already has. `ASSISTANT_NAME` is what it is called in the room.
+
+The browser never holds the secret and never talks to the cockpit directly, because it has no
+session there: the room emits a socket event, this server posts it on with the same shared secret
+the user endpoints use, and the answer comes back into the chat. With no endpoint configured the
+conversation is removed rather than left in place doing nothing, and DeepSeek is removed either
+way.
+
 ## A fourth change, about building rather than meeting
 
 `RUN chown -R node:node /src` in the Dockerfile walked every file in the image, `node_modules`

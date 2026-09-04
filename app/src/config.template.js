@@ -563,6 +563,18 @@ module.exports = {
             users_from_db: process.env.HOST_USERS_FROM_DB === 'true',
             users_api_secret_key: process.env.USERS_API_SECRET || 'mirotalkweb_default_secret',
             users_api_endpoint: process.env.USERS_API_ENDPOINT || 'http://localhost:9000/api/v1/user/isAuth', // 'https://webrtc.mirotalk.com/api/v1/user/isAuth'
+            /**
+             * bravio: where the room's own assistant answers (MEET-40).
+             *
+             * MiroTalk ships ChatGPT and DeepSeek in the meeting chat, and both stay off here:
+             * a model call from inside this container would spend money that the cockpit's
+             * ledger never sees. This points at the cockpit instead, which runs the
+             * initiative's own assistant through the one metered door it already has. Empty
+             * means no assistant in the room at all, which is upstream's behaviour.
+             */
+            assistant_api_endpoint: process.env.ASSISTANT_API_ENDPOINT || '',
+            /** What that assistant is called in the room, for example Kukupus or Memoriator. */
+            assistant_name: process.env.ASSISTANT_NAME || 'Assistent',
             users_api_room_allowed:
                 process.env.USERS_ROOM_ALLOWED_ENDPOINT || 'http://localhost:9000/api/v1/user/isRoomAllowed', // 'https://webrtc.mirotalk.com/api/v1/user/isRoomAllowed'
             users_api_rooms_allowed:

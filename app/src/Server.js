@@ -4131,6 +4131,39 @@ function startServer() {
             room.broadCast(socket.id, 'chatReaction', data);
         });
 
+        /**
+         * bravio: ask the cockpit's own assistant, on behalf of the room (MEET-40).
+         *
+         * The browser never holds the secret and never talks to the cockpit directly: it has no
+         * session there and no business with a key. This posts with the same shared secret the
+         * user endpoints use, and hands the answer straight back.
+         */
+        socket.on('bravioAssistant', async ({ prompt }, cb) => {
+            const endpoint = hostCfg?.assistant_api_endpoint;
+            if (!endpoint) return cb({ message: 'No assistant is configured for this room.' });
+            if (!roomExists(socket)) return cb({ message: 'Room not found' });
+            const room = roomList.get(socket.room_id);
+            const peer = room?.getPeer(socket.id);
+            try {
+                const response = await axios.post(
+                    endpoint,
+                    {
+                        room: socket.room_id,
+                        question: String(prompt || '').slice(0, 2000),
+                        peer_name: peer?.peer_info?.peer_name || '',
+                        api_secret_key: hostCfg.users_api_secret_key,
+                    },
+                    { timeout: 120000 },
+                );
+                const message = response?.data?.message || 'No answer.';
+                log.info('[bravio] assistant answered', { room: socket.room_id, chars: String(message).length });
+                cb({ message });
+            } catch (error) {
+                log.error('[bravio] assistant failed', error.message);
+                cb({ message: 'The assistant could not be reached.' });
+            }
+        });
+
         socket.on('getChatGPT', async ({ time, room, name, prompt, context }, cb) => {
             if (!roomExists(socket)) {
                 return cb({ message: 'Room not found' });

@@ -850,6 +850,19 @@ class RoomClient {
             }
             // Store ChatGPT enabled state for VideoAI fallback
             this.chatGPTEnabled = room.chatGPTEnabled || false;
+            // bravio: is there an assistant of our own behind this conversation, and what is it
+            // called? Without one, the entry is removed rather than left in place doing nothing:
+            // two dead buttons in front of a client are worse than none (MEET-36, MEET-40).
+            this.bravioAssistant = Boolean(room.bravioAssistant);
+            this.bravioAssistantName = room.bravioAssistantName || 'Assistent';
+            const chatGptEntry = this.getId('ChatGPT');
+            const deepSeekEntry = this.getId('DeepSeek');
+            if (deepSeekEntry) deepSeekEntry.remove();
+            if (chatGptEntry && !this.bravioAssistant) chatGptEntry.remove();
+            if (chatGptEntry && this.bravioAssistant) {
+                const label = chatGptEntry.querySelector('.participant-name, .name, span');
+                if (label) label.textContent = this.bravioAssistantName;
+            }
             // Whisper server-side transcription
             this.whisperEnabled = room.whisperEnabled || false;
             if (typeof transcription !== 'undefined' && transcription) {
@@ -6676,7 +6689,12 @@ class RoomClient {
             this.showAITypingIndicator('ChatGPT');
 
             this.socket
-                .request('getChatGPT', {
+                // bravio: the initiative's own assistant when the instance has one, which is
+                // what this conversation is for here. Upstream's ChatGPT and DeepSeek stay off:
+                // a model call from inside this container would spend money the cockpit's ledger
+                // never sees, and the cockpit already has an assistant with the initiative's own
+                // voice, context and budget.
+                .request(this.bravioAssistant ? 'bravioAssistant' : 'getChatGPT', {
                     time: getDataTimeString(),
                     room: this.room_id,
                     name: this.peer_name,
@@ -12522,7 +12540,14 @@ class RoomClient {
                     return userLog('warning', 'The moderator does not allow you to chat with ChatGPT', 'top-end', 6000);
                 }
                 isChatGPTOn = true;
-                chatAbout.innerHTML = generateChatAboutHTML(image.chatgpt, 'ChatGPT', 'online', '', 'AI ASSISTANT');
+                chatAbout.innerHTML = generateChatAboutHTML(
+                    image.chatgpt,
+                    // bravio: the initiative's assistant answers here, so its name belongs here.
+                    this.bravioAssistant ? this.bravioAssistantName : 'ChatGPT',
+                    'online',
+                    '',
+                    'AI ASSISTANT'
+                );
                 this.getId('chatGPTMessages').style.display = 'block';
                 break;
             case 'DeepSeek':

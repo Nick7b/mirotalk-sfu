@@ -108,6 +108,11 @@ module.exports = class Room {
             sessionId: this.sessionId,
             broadcasting: this._isBroadcasting,
             recording: this.recording,
+            // bravio: whether this instance has an assistant of its own to answer in the room,
+            // and what to call it. Empty means the conversation is removed rather than shown
+            // doing nothing (MEET-36, MEET-40).
+            bravioAssistant: Boolean(config?.security?.host?.assistant_api_endpoint),
+            bravioAssistantName: config?.security?.host?.assistant_name || 'Assistent',
             config: {
                 isLocked: this._isLocked,
                 isLobbyEnabled: this._isLobbyEnabled,
