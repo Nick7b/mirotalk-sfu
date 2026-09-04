@@ -60,6 +60,21 @@ Commanded with no started is a client that never acted. Started with no file is 
 Failed says what the browser objected to. All three are off unless `WEBHOOK_ENABLED` is set, like
 everything else here.
 
+## Menus that stay open while you hover them
+
+Reported from Firefox on Windows: hovering an expandable control opens it and then closes it
+again a moment later, with the cursor still on it and not moved, and it takes three or four tries
+before it stays.
+
+`mouseleave` is not proof that the mouse moved. A layout change under a stationary cursor fires it
+too, and a meeting room reflows constantly: tiles arrive, the grid resizes, the button bar shows
+and hides. Firefox re-evaluates hover on layout, where Chrome tends to wait for the next mouse
+move, which is why it shows up there first.
+
+The delayed hide now asks the DOM who is actually hovered before hiding, which is true regardless
+of which reflow fired the event, and the ten second button-bar sweep no longer hides a bar that
+has an open menu on it.
+
 ## A fourth change, about building rather than meeting
 
 `RUN chown -R node:node /src` in the Dockerfile walked every file in the image, `node_modules`

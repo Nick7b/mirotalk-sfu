@@ -4731,11 +4731,26 @@ function handleDropdownHover(dropdownElement = null) {
 
         const hideDropdown = () => {
             timeoutId = setTimeout(() => {
+                // bravio: only hide if the pointer really is somewhere else.
+                //
+                // `mouseleave` is not proof that the mouse moved. A layout change under a
+                // stationary cursor fires it too, and this room reflows constantly: video tiles
+                // arrive, the grid resizes, the button bar shows and hides. Firefox re-evaluates
+                // hover on layout, so a menu opened by hovering would close again a moment later
+                // without the cursor having moved at all, and open once more when the layout
+                // settled. Reported from Firefox on Windows, 5-9-2026, as menus that flicker
+                // until the third or fourth try.
+                //
+                // Asking the DOM who is hovered at the moment of hiding costs nothing and is
+                // true regardless of which reflow fired the event.
+                const stillHovered =
+                    dropdown.matches(':hover') || menu.matches(':hover') || toggle.matches(':hover');
+                if (stillHovered) return;
                 const bsDropdown = bootstrap.Dropdown.getInstance(toggle);
                 if (bsDropdown) {
                     bsDropdown.hide();
                 }
-            }, 200);
+            }, 350);
         };
 
         dropdown.addEventListener('mouseenter', () => {
@@ -4779,7 +4794,11 @@ function checkButtonsBar() {
         toggleClassElements('username', 'flex');
         isButtonsVisible = true;
     } else {
-        if (!isButtonsBarOver) {
+        // bravio: a menu somebody has open is a menu somebody is using. Without this the ten
+        // second sweep could hide the whole bar, and the open dropdown with it, while the
+        // cursor was resting on it.
+        const menuOpen = Boolean(document.querySelector('.dropdown-menu.show'));
+        if (!isButtonsBarOver && !menuOpen) {
             bottomButtons.style.display = 'none';
             toggleClassElements('username', 'none');
             isButtonsVisible = false;
