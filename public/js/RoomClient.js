@@ -9239,6 +9239,11 @@ class RoomClient {
             if (state === 'paused') {
                 console.log('[bravio] auto recording resume', data);
                 this.resumeRecording();
+                // bravio (MEET-31): a paused recorder writes nothing, so the file's own timeline
+                // skips the gap entirely. Anything lining a transcript up against wall-clock
+                // speaker turns has to know where those gaps were, and this browser is the only
+                // thing that knows: the server asked, but only the recorder can say it obeyed.
+                this.reportRecordingStatus('resumed');
             } else if (state === 'inactive') {
                 console.log('[bravio] auto recording start', data);
                 this.startRecording();
@@ -9247,6 +9252,7 @@ class RoomClient {
         if (data.action === 'pause' && state === 'recording') {
             console.log('[bravio] auto recording pause', data);
             this.pauseRecording();
+            this.reportRecordingStatus('paused');
         }
     }
 

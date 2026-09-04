@@ -26,6 +26,20 @@ module.exports = class Room {
         this.activeSpeakerObserverEnabled =
             activeSpeakerObserverEnabled !== undefined ? activeSpeakerObserverEnabled : false;
         this.activeSpeakerObserver = null;
+        // bravio (MEET-31): who is speaking, reported on CHANGE rather than continuously.
+        //
+        // The observer below already fires ten times a second with the loudest producer, and
+        // every one of those is broadcast into the room so the UI can draw a ring. What was
+        // missing is anybody OUTSIDE the room being told, and forwarding the raw stream would be
+        // six hundred webhook posts a minute for a conversation between two people.
+        //
+        // So this holds the last speaker actually reported and the server hangs `onSpeakerChange`
+        // on the room if it wants to hear about it. Null means nobody is speaking, which is a
+        // change worth reporting as well: it is what closes a turn, rather than leaving one open
+        // until the next person happens to start.
+        this.bravioSpeaker = null;
+        this.bravioSpeakerAt = 0;
+        this.onSpeakerChange = null;
         // ##########################
         this._isBroadcasting = false;
         // ##########################
@@ -299,7 +313,36 @@ module.exports = class Room {
         });
         this.audioLevelObserver.on('silence', () => {
             //log.debug('audioLevelObserver', { volume: 'silence' });
+            // bravio (MEET-31): silence closes the current turn. Without this a turn would run
+            // until somebody else spoke, so the last person to talk before a five minute pause
+            // would appear to have been talking through all of it.
+            this.bravioReportSpeaker(null);
         });
+    }
+
+    /**
+     * bravio (MEET-31): tell the server when the speaker CHANGES, and only then.
+     *
+     * Two rules, and both exist because the raw signal is ten events a second. A repeat of the
+     * current speaker is not a change and is dropped. A change that arrives within
+     * MIN_TURN_MS of the last one is dropped as well, because the loudest producer flickers
+     * between two people who are talking over each other, and a turn per flicker would produce a
+     * transcript attributed to nobody in particular at enormous length.
+     *
+     * The cost of that second rule is honest and worth writing down: genuine rapid exchange is
+     * smoothed into fewer, longer turns. This is the cheap half of MEET-31 and the half that
+     * cannot fix it; MEET-33 records each track separately and has no such limit.
+     */
+    bravioReportSpeaker(peerName) {
+        const MIN_TURN_MS = 700;
+        if (peerName === this.bravioSpeaker) return;
+        const now = Date.now();
+        if (peerName !== null && now - this.bravioSpeakerAt < MIN_TURN_MS) return;
+        this.bravioSpeaker = peerName;
+        this.bravioSpeakerAt = now;
+        if (typeof this.onSpeakerChange === 'function') {
+            this.onSpeakerChange(this.id, peerName, now);
+        }
     }
 
     sendActiveSpeakerVolume(volumes) {
@@ -326,6 +369,8 @@ module.exports = class Room {
                                 };
                                 // log.debug('Sending audio volume', data);
                                 this.sendToAll('audioVolume', data);
+                                // bravio (MEET-31): the same fact, reported outward on change.
+                                this.bravioReportSpeaker(peer_name);
                                 return;
                             }
                         });

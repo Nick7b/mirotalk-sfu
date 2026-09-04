@@ -2369,6 +2369,10 @@ function startServer() {
                 try {
                     const worker = await getMediasoupWorker();
                     const room = await new Room(socket.room_id, worker, io).ready();
+                    // bravio (MEET-31): the room reports a speaker change, this sends it on.
+                    // Hung on the room rather than added to the constructor, so the constructor
+                    // signature stays upstream's and is one less thing to merge.
+                    room.onSpeakerChange = sendSpeakerWebhook;
                     roomList.set(socket.room_id, room);
                     log.debug('Created room', { room_id: socket.room_id });
                     callback({ room_id: socket.room_id });
@@ -5168,6 +5172,25 @@ function startServer() {
                 .post(webhook.url, { event: 'recordingStatus', data }, { timeout: 5000 })
                 .then((response) => log.debug('Recording status tracked:', response.data))
                 .catch((error) => log.error('Error tracking recording status:', error.message));
+        }
+
+        /**
+         * bravio: who started speaking, and when (MEET-31).
+         *
+         * `at` is epoch milliseconds from THIS server rather than a formatted local string,
+         * because the whole value of the event is lining it up against timestamps in a
+         * transcript. Upstream's `timestamp` field is kept beside it for consistency with the
+         * other four events, and is not what the cockpit reads.
+         *
+         * `peer_name` empty means silence: nobody is speaking, which closes the open turn.
+         */
+        function sendSpeakerWebhook(room_id, peer_name, at) {
+            if (!webhook.enabled) return;
+            const data = { timestamp: log.getDateTime(false), room_id, peer_name: peer_name || '', at };
+            axios
+                .post(webhook.url, { event: 'speakerChange', data }, { timeout: 5000 })
+                .then((response) => log.debug('Speaker change tracked:', response.data))
+                .catch((error) => log.error('Error tracking speaker change:', error.message));
         }
 
         async function handleJoinWebHook(room_id, session_id, peer_info) {
