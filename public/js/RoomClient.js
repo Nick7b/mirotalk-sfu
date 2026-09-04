@@ -8627,6 +8627,28 @@ class RoomClient {
         this.toggleVideoAudioTabs(false);
         console.error('Recording error', error);
         if (popupLog) this.userLog('error', error, 'top-end', 6000);
+        // bravio: tell the server too. Until now a recording that failed was known ONLY to the
+        // one browser it failed in: the presenter saw a toast and everybody else, including the
+        // system that files the transcript, saw an empty result with no reason. That cost half
+        // an evening on 4-9-2026.
+        this.reportRecordingStatus('failed', String(error).slice(0, 300));
+    }
+
+    /**
+     * bravio: say what became of the recording, so the failure is not private to one tab.
+     *
+     * Three states, and the difference between them is the whole diagnostic value: `commanded`
+     * comes from the server when it asks for a recording, `started` means a MediaRecorder really
+     * began, and `failed` carries the reason. Commanded without started is a client that never
+     * acted; started without a file is an upload problem; failed says what the browser objected
+     * to.
+     */
+    reportRecordingStatus(state, reason = '') {
+        try {
+            this.socket.emit('recordingStatus', { state, reason });
+        } catch (err) {
+            console.error('could not report the recording status', err);
+        }
     }
 
     getSupportedMimeTypes() {
@@ -8845,6 +8867,8 @@ class RoomClient {
 
     handleMediaRecorderStart(evt) {
         console.log('MediaRecorder started: ', evt);
+        // bravio: it really began, in this browser, now.
+        rc.reportRecordingStatus('started');
         rc.cleanLastRecordingInfo();
         rc.disableRecordingOptions();
         rc._recStartTs = performance.now();

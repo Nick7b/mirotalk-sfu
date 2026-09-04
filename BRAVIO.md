@@ -41,6 +41,25 @@ recording is only ever finished by leaving the room.
 
 **Leaving stops the recording first**, so the file is finalised rather than abandoned mid-chunk.
 
+## Saying what became of a recording
+
+Upstream posts three webhooks, `join`, `exit` and `disconnect`, and nothing about recording. So a
+recording that failed inside the presenter's browser was known ONLY to that browser: they saw a
+toast, and everything outside, including the system that files the transcript, saw an empty result
+with no reason. That cost most of an evening on 4 September 2026, hunting a meeting that produced
+nothing.
+
+The instance now posts `recordingStatus` on the same webhook, in three states, and the difference
+between them is the whole diagnostic value:
+
+- **`commanded`** from the server, when it asks a room to start recording.
+- **`started`** from the client, when a `MediaRecorder` really began.
+- **`failed`** from the client, carrying the browser's own reason.
+
+Commanded with no started is a client that never acted. Started with no file is an upload problem.
+Failed says what the browser objected to. All three are off unless `WEBHOOK_ENABLED` is set, like
+everything else here.
+
 ## A fourth change, about building rather than meeting
 
 `RUN chown -R node:node /src` in the Dockerfile walked every file in the image, `node_modules`

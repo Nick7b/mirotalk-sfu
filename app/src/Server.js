@@ -3999,6 +3999,27 @@ function startServer() {
             room.broadCast(socket.id, 'setVideoOff', data);
         });
 
+        // bravio: the client saying what happened to its recording.
+        socket.on('recordingStatus', (dataObject) => {
+            if (!roomExists(socket)) return;
+            const data = checkXSS(dataObject);
+            const room = roomList.get(socket.room_id);
+            const peer = room?.getPeer(socket.id);
+            log.info('[bravio] recording status', {
+                room: socket.room_id,
+                peer: peer?.peer_info?.peer_name,
+                state: data?.state,
+                reason: data?.reason,
+            });
+            sendRecordingWebhook(
+                socket.room_id,
+                String(data?.state || 'unknown'),
+                String(data?.reason || ''),
+                room?.getPeers()?.size || 0,
+                peer?.peer_info?.peer_name || '',
+            );
+        });
+
         socket.on('recordingAction', async (dataObject) => {
             if (!roomExists(socket)) return;
 
@@ -5092,8 +5113,28 @@ function startServer() {
             const shouldRecord = peers >= from;
             if (shouldRecord === room.bravioAutoRecording) return;
             room.bravioAutoRecording = shouldRecord;
-            log.info('[bravio] auto recording', { room: room.id, peers, action: shouldRecord ? 'start' : 'pause' });
-            room.sendToAll('recordingCommand', { action: shouldRecord ? 'start' : 'pause', peers });
+            const action = shouldRecord ? 'start' : 'pause';
+            log.info('[bravio] auto recording', { room: room.id, peers, action });
+            room.sendToAll('recordingCommand', { action, peers });
+            // bravio: and tell the cockpit we asked, so "no recording" can be told apart from
+            // "we never asked for one".
+            if (action === 'start') sendRecordingWebhook(room.id, 'commanded', '', peers);
+        }
+
+        /**
+         * bravio: what became of a recording, forwarded to whoever runs this instance.
+         *
+         * Upstream posts join, exit and disconnect and nothing else, so a recording that failed
+         * inside one browser was invisible to everything outside it. This rides on the same
+         * webhook the other three use rather than inventing a second channel.
+         */
+        function sendRecordingWebhook(room_id, state, reason = '', peers = 0, peer_name = '') {
+            if (!webhook.enabled) return;
+            const data = { timestamp: log.getDateTime(false), room_id, state, reason, peers, peer_name };
+            axios
+                .post(webhook.url, { event: 'recordingStatus', data }, { timeout: 5000 })
+                .then((response) => log.debug('Recording status tracked:', response.data))
+                .catch((error) => log.error('Error tracking recording status:', error.message));
         }
 
         async function handleJoinWebHook(room_id, session_id, peer_info) {
