@@ -41,6 +41,14 @@ recording is only ever finished by leaving the room.
 
 **Leaving stops the recording first**, so the file is finalised rather than abandoned mid-chunk.
 
+## A fourth change, about building rather than meeting
+
+`RUN chown -R node:node /src` in the Dockerfile walked every file in the image, `node_modules`
+and the compiled mediasoup worker included. On overlayfs that copies the whole tree into a new
+layer: measured on the dev box on 4 September 2026 it ran for thirteen minutes at under one
+percent CPU, bound by disk rather than by work. The copies now set ownership themselves with
+`--chown`, which costs nothing and produces no duplicate layer.
+
 ## The limit, stated plainly
 
 Capture still happens in the presenter's browser. This SFU has no recorder of its own, so if the
