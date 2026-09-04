@@ -28,9 +28,16 @@ getting a vote and the switch is hidden rather than left visible in a state nobo
 client then uploads each chunk as it is produced and keeps nothing locally, so an abrupt leave
 still leaves a playable file on the server: `/recSync` appends, so what arrived is what you keep.
 
-**`RECORDING_AUTO_FROM=2`** starts recording once that many people are in the room and stops below
-it. A conversation is worth recording; one person waiting alone is not. The server decides, because
-it is the only party that knows the count.
+**`RECORDING_AUTO_FROM=2`** starts recording once that many people are in the room and **pauses**
+below it. A conversation is worth recording; one person waiting alone is not. The server decides,
+because it is the only party that knows the count.
+
+It pauses rather than stops, and that is the point rather than a detail. The filename is stamped
+with the moment recording began, so a stop and a later start produce a **second file**: one, two
+and one again participants would give you a meeting that arrives as two unrelated recordings with
+nothing to join them. Pausing keeps one MediaRecorder, one filename and one continuous file, and a
+paused recorder emits no data, so the stretch where somebody sat alone costs nothing. The
+recording is only ever finished by leaving the room.
 
 **Leaving stops the recording first**, so the file is finalised rather than abandoned mid-chunk.
 

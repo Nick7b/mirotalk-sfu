@@ -9173,22 +9173,38 @@ class RoomClient {
     }
 
     /**
-     * bravio: start or stop because the room grew or shrank.
+     * bravio: follow the size of the room, with ONE recording per meeting.
+     *
+     * It pauses and resumes rather than stopping and starting, and that is the whole point.
+     * `getServerRecFileName()` stamps the filename with the moment recording began, so a stop
+     * and a later start produce a SECOND file: the meeting would arrive in the cockpit as two
+     * unrelated recordings, and nothing would join them back together. Pausing keeps the same
+     * MediaRecorder, the same filename and one continuous file, and a paused recorder emits no
+     * data, so the stretch where somebody sat alone costs nothing.
+     *
+     * The recording is only ever FINISHED by leaving the room, which is where the file is
+     * finalised.
      *
      * Only the presenter acts, because the capture is a MediaRecorder in one browser and two of
      * them would produce two files of the same conversation. That also means recording follows
-     * the presenter: if they leave, it stops, which is the honest limit of recording in a
-     * browser rather than in the SFU.
+     * the presenter: if they leave, it ends, which is the honest limit of recording in a browser
+     * rather than in the SFU.
      */
     handleRecordingCommand(data) {
         if (!isPresenter) return;
-        if (data.action === 'start' && !this.isRecording()) {
-            console.log('[bravio] auto recording start', data);
-            this.startRecording();
+        const state = this.mediaRecorder ? this.mediaRecorder.state : 'inactive';
+        if (data.action === 'start') {
+            if (state === 'paused') {
+                console.log('[bravio] auto recording resume', data);
+                this.resumeRecording();
+            } else if (state === 'inactive') {
+                console.log('[bravio] auto recording start', data);
+                this.startRecording();
+            }
         }
-        if (data.action === 'stop' && this.isRecording()) {
-            console.log('[bravio] auto recording stop', data);
-            this.stopRecording();
+        if (data.action === 'pause' && state === 'recording') {
+            console.log('[bravio] auto recording pause', data);
+            this.pauseRecording();
         }
     }
 

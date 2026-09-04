@@ -5072,13 +5072,18 @@ function startServer() {
         // Helpers
 
         /**
-         * bravio: start and stop recording on the size of the room.
+         * bravio: start and pause recording on the size of the room.
          *
          * A conversation is worth recording and a person sitting alone waiting is not, so the
          * threshold is a count rather than a button. The server decides because it is the only
          * party that knows the count; the capture still happens in the presenter's browser,
-         * because this SFU has no recorder of its own. If the presenter leaves, recording stops
+         * because this SFU has no recorder of its own. If the presenter leaves, recording ends
          * with them, which is a real limit and is written down rather than papered over.
+         *
+         * PAUSE, NOT STOP. The client stamps the recording's filename with the moment it began,
+         * so a stop and a later start would produce a second file and the meeting would reach
+         * the cockpit as two unrelated recordings. Pausing keeps one file for the whole meeting,
+         * and a paused recorder emits nothing, so the gap costs no bytes.
          */
         function autoRecordingCheck(room) {
             const from = config?.media?.recording?.autoFrom || 0;
@@ -5087,8 +5092,8 @@ function startServer() {
             const shouldRecord = peers >= from;
             if (shouldRecord === room.bravioAutoRecording) return;
             room.bravioAutoRecording = shouldRecord;
-            log.info('[bravio] auto recording', { room: room.id, peers, action: shouldRecord ? 'start' : 'stop' });
-            room.sendToAll('recordingCommand', { action: shouldRecord ? 'start' : 'stop', peers });
+            log.info('[bravio] auto recording', { room: room.id, peers, action: shouldRecord ? 'start' : 'pause' });
+            room.sendToAll('recordingCommand', { action: shouldRecord ? 'start' : 'pause', peers });
         }
 
         async function handleJoinWebHook(room_id, session_id, peer_info) {
