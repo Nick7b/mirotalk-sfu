@@ -152,7 +152,23 @@ async function startTrackRecording(room, peerName, producer, directory) {
         await transport.connect({ ip: '127.0.0.1', port, rtcpPort: port + 1 });
         await consumer.resume();
 
-        log.info('[bravio] per-track recording started', { room: room.id, peer: peerName, file, port });
+        // MEET-33-1: the first probe captured the second peer and nothing at all from the first,
+        // so the state of the producer at the moment of consuming is worth having in the log
+        // rather than reasoned about afterwards. A paused producer sends nothing, and a consumer
+        // of one is resumed and still silent.
+        log.info('[bravio] per-track recording started', {
+            room: room.id,
+            peer: peerName,
+            file,
+            port,
+            producerPaused: producer.paused,
+            consumerPaused: consumer.paused,
+            producerScore: producer.score,
+        });
+        // If the producer is paused when we attach, say so when it resumes: that tells apart
+        // "never sent anything" from "sent nothing while we were listening".
+        consumer.on('producerpause', () => log.warn('[bravio] track producer paused', { peer: peerName }));
+        consumer.on('producerresume', () => log.warn('[bravio] track producer resumed', { peer: peerName }));
         return { file, sdpPath, port, transport, consumer, child, peerName };
     } catch (error) {
         log.error('[bravio] per-track recording failed to start', {
