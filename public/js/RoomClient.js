@@ -8699,7 +8699,19 @@ class RoomClient {
         // Get supported MIME types and set options
         const supportedMimeTypes = this.getSupportedMimeTypes();
         console.log('MediaRecorder supported options', supportedMimeTypes);
-        const options = { mimeType: supportedMimeTypes[0] };
+        // bravio: ASK FOR A BITRATE RATHER THAN TAKING WHATEVER THE BROWSER PICKS.
+        //
+        // This recording is transcribed, and the audio reaching this line has already been
+        // through a lot: each participant's microphone was encoded to Opus by WebRTC at speech
+        // bitrates, sent to the SFU, decoded into an <audio> element here, and mixed with
+        // everybody else's. MediaRecorder then encodes it a SECOND time, and with no
+        // audioBitsPerSecond set that second encode ran at the browser's default.
+        //
+        // 128 kbps does not undo the first encode or the mixing, and only per-track recording
+        // from the SFU can do that. What it does remove is the one loss in the chain that costs
+        // nothing to avoid: a mixed room at a default bitrate is the worst possible input to
+        // whisper, and audio is a rounding error next to the video in the same file.
+        const options = { mimeType: supportedMimeTypes[0], audioBitsPerSecond: 128000 };
 
         recCodecs = supportedMimeTypes[0];
 
