@@ -39,6 +39,7 @@ module.exports = class Room {
         // until the next person happens to start.
         this.bravioSpeaker = null;
         this.bravioSpeakerAt = 0;
+        this.bravioSilenceTimer = null;
         this.onSpeakerChange = null;
         // ##########################
         this._isBroadcasting = false;
@@ -335,9 +336,44 @@ module.exports = class Room {
      */
     bravioReportSpeaker(peerName) {
         const MIN_TURN_MS = 700;
+        // How long silence must last before it ends somebody's turn.
+        //
+        // MEASURED, not chosen: a live probe on 5-9-2026 produced turns 250 ms long, one per
+        // second, because the observer's `silence` event closed a turn the instant the sound
+        // dipped and the next sound opened a new one. Real speech dips like that between every
+        // phrase, so a real conversation would have been shredded into hundreds of sub-second
+        // turns per person.
+        //
+        // Attribution survives that, since many short turns by one speaker still overlap the
+        // line. CONFIDENCE does not: the gaps count as nobody speaking, so coverage falls and
+        // every line would come back below the confident mark. A screen where everything looks
+        // uncertain says exactly as much as one where nothing does, and MEET-32 exists to make
+        // that distinction mean something.
+        const SILENCE_MS = 1500;
+
+        // Silence is a DELAYED close, so a pause for breath does not end a turn. Anybody
+        // speaking before the timer fires cancels it and keeps the turn they were already in.
+        if (peerName === null) {
+            if (this.bravioSpeaker === null || this.bravioSilenceTimer) return;
+            this.bravioSilenceTimer = setTimeout(() => {
+                this.bravioSilenceTimer = null;
+                this.bravioCommitSpeaker(null);
+            }, SILENCE_MS);
+            return;
+        }
+        if (this.bravioSilenceTimer) {
+            clearTimeout(this.bravioSilenceTimer);
+            this.bravioSilenceTimer = null;
+        }
+        if (peerName === this.bravioSpeaker) return;
+        if (Date.now() - this.bravioSpeakerAt < MIN_TURN_MS) return;
+        this.bravioCommitSpeaker(peerName);
+    }
+
+    /** Record the change and tell whoever is listening. Split out so the silence timer shares it. */
+    bravioCommitSpeaker(peerName) {
         if (peerName === this.bravioSpeaker) return;
         const now = Date.now();
-        if (peerName !== null && now - this.bravioSpeakerAt < MIN_TURN_MS) return;
         this.bravioSpeaker = peerName;
         this.bravioSpeakerAt = now;
         if (typeof this.onSpeakerChange === 'function') {
@@ -394,6 +430,13 @@ module.exports = class Room {
     }
 
     closeAudioLevelObserver() {
+        // bravio (MEET-31): the pending silence close goes with the observer. Left running it
+        // would fire against a room that no longer exists and report a speaker change for a
+        // meeting that ended, which is the sort of row nobody can explain a week later.
+        if (this.bravioSilenceTimer) {
+            clearTimeout(this.bravioSilenceTimer);
+            this.bravioSilenceTimer = null;
+        }
         if (this.audioLevelObserver && !this.audioLevelObserver.closed) {
             this.audioLevelObserver.close();
             this.audioLevelObserver = null;
