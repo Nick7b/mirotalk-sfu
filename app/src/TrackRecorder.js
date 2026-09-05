@@ -24,6 +24,7 @@
  */
 
 const { spawn } = require('child_process');
+const dgram = require('dgram');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
@@ -83,6 +84,34 @@ function buildSdp(port, codec) {
         'a=recvonly',
         '',
     ].join('\n');
+}
+
+/**
+ * Resolve once something is listening on this UDP port, or throw.
+ *
+ * Asked by trying to bind it ourselves: a bind that FAILS with EADDRINUSE is proof that ffmpeg
+ * has it, which is a fact about the port rather than an assumption about how long a process
+ * takes to start. A bind that succeeds means ffmpeg is not ready, so the socket is closed again
+ * and the question asked once more.
+ */
+async function waitForPort(port, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+        const taken = await new Promise((resolve) => {
+            const probe = dgram.createSocket('udp4');
+            probe.once('error', () => {
+                // EADDRINUSE: somebody else has it, which here means ffmpeg.
+                try { probe.close(); } catch { /* never opened */ }
+                resolve(true);
+            });
+            probe.bind(port, '127.0.0.1', () => {
+                probe.close(() => resolve(false));
+            });
+        });
+        if (taken) return;
+        if (Date.now() > deadline) throw new Error(`ffmpeg never bound port ${port}`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
 }
 
 /**
@@ -146,8 +175,18 @@ async function startTrackRecording(room, peerName, producer, directory) {
             log.warn('[bravio] track recorder said', { room: room.id, peer: peerName, err: String(data).slice(0, 200) }),
         );
 
-        // Give ffmpeg a moment to bind the port before anything is sent at it.
-        await new Promise((resolve) => setTimeout(resolve, 400));
+        // WAIT FOR THE PORT, DO NOT SLEEP AND HOPE. Measured on the dev box, twice: with a flat
+        // 400 ms wait the FIRST recorder in a fresh container captured zero bytes and the second
+        // captured fine, every time. The producers were unpaused with a score of 10 in both
+        // cases, so the sender was healthy and the loss was on this side.
+        //
+        // The cause is that mediasoup connects its UDP socket to this address. Sending to a port
+        // nothing has bound yet draws an ICMP port-unreachable, and a CONNECTED UDP socket turns
+        // that into a permanent error rather than a dropped packet: the first ffmpeg was still
+        // starting, the socket failed once and never recovered, while the second started warm
+        // and made it in time. A sleep tuned to be long enough today is the same bug waiting for
+        // a busier server.
+        await waitForPort(port);
 
         await transport.connect({ ip: '127.0.0.1', port, rtcpPort: port + 1 });
         await consumer.resume();
