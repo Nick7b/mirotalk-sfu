@@ -233,7 +233,29 @@ async function startTrackRecording(room, peerName, producer, directory) {
                 log.warn('[bravio] track flow check failed', { peer: peerName, error: error.message });
             }
         }, 5000);
-        return { file, sdpPath, port, transport, consumer, child, peerName };
+        const recorder = { file, sdpPath, port, transport, consumer, child, peerName, stopping: null };
+
+        // MEET-33-2: mediasoup says when this is over, so nothing here has to watch MiroTalk's
+        // own bookkeeping for it. `producerclose` fires when the participant stops sending, which
+        // is what leaving a meeting does; `transportclose` covers the router going away underneath
+        // it. Both end up in the same idempotent stop.
+        //
+        // Without this a participant who left after five minutes kept an ffmpeg and a port until
+        // the last person closed the room, which on a long meeting is most of an hour of process
+        // per person who stepped out.
+        consumer.once('producerclose', () => {
+            log.info('[bravio] track producer closed, stopping recorder', { peer: peerName });
+            stopTrackRecording(recorder).catch((error) =>
+                log.error('[bravio] stopping on producerclose failed', { error: error.message }),
+            );
+        });
+        consumer.once('transportclose', () => {
+            stopTrackRecording(recorder).catch(() => {
+                /* the room is going away; the room teardown logs its own failures */
+            });
+        });
+
+        return recorder;
     } catch (error) {
         log.error('[bravio] per-track recording failed to start', {
             room: room.id,
@@ -259,6 +281,17 @@ async function startTrackRecording(room, peerName, producer, directory) {
  */
 async function stopTrackRecording(recorder) {
     if (!recorder) return null;
+    // IDEMPOTENT, because there are now three ways in: the producer closing, the transport
+    // closing, and the room being torn down. Two of those routinely fire for the same recorder
+    // when somebody leaves, and stopping twice would close a consumer that is already closed,
+    // release a port that has been handed to somebody else, and log a second stop for a file
+    // that was finished a minute ago.
+    if (recorder.stopping) return recorder.stopping;
+    recorder.stopping = stopTrackRecordingOnce(recorder);
+    return recorder.stopping;
+}
+
+async function stopTrackRecordingOnce(recorder) {
     const { child, consumer, transport, port, sdpPath, file } = recorder;
     // Stop the media first, then LET FFMPEG NOTICE. Closing the consumer and the transport ends
     // the packets; ffmpeg's RTP reader then times out by itself, writes its trailer and exits
@@ -296,4 +329,47 @@ async function stopTrackRecording(recorder) {
     return { file, bytes };
 }
 
-module.exports = { startTrackRecording, stopTrackRecording, perTrackEnabled, buildSdp };
+/**
+ * Clear up after a crash (MEET-33-2).
+ *
+ * An ffmpeg started by this process dies with it, because it is a child and the container has no
+ * init to adopt it. What survives is the litter: an `.sdp` beside every recording that was in
+ * flight, and a zero-byte `.ogg` for any track that never got its trailer written. Neither is
+ * readable by anything and both would sit there until somebody noticed.
+ *
+ * Only run at startup, and only on files whose recorder cannot still exist, because this process
+ * has just started and therefore owns none of them.
+ */
+function sweepOrphanedTracks(directory) {
+    if (!perTrackEnabled() || !fs.existsSync(directory)) return { sdp: 0, empty: 0 };
+    const result = { sdp: 0, empty: 0 };
+    for (const name of fs.readdirSync(directory)) {
+        if (!name.startsWith('Track_')) continue;
+        const full = path.join(directory, name);
+        try {
+            if (name.endsWith('.sdp')) {
+                fs.rmSync(full, { force: true });
+                result.sdp += 1;
+            } else if (name.endsWith('.ogg') && fs.statSync(full).size === 0) {
+                // A zero-byte track is a recorder that was interrupted before ffmpeg wrote
+                // anything. There is no audio in it to lose.
+                fs.rmSync(full, { force: true });
+                result.empty += 1;
+            }
+        } catch (error) {
+            log.warn('[bravio] could not clear an orphaned track file', { name, error: error.message });
+        }
+    }
+    if (result.sdp || result.empty) {
+        log.info('[bravio] cleared orphaned per-track files from a previous run', result);
+    }
+    return result;
+}
+
+module.exports = {
+    startTrackRecording,
+    stopTrackRecording,
+    perTrackEnabled,
+    buildSdp,
+    sweepOrphanedTracks,
+};

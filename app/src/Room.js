@@ -955,7 +955,14 @@ module.exports = class Room {
         // audio, so this line does not need to know the rules.
         startTrackRecording(this, peer_name, peerProducer, path.join(__dirname, config.media.recording.dir))
             .then((recorder) => {
-                if (recorder) this.bravioTrackRecorders.set(id, recorder);
+                if (!recorder) return;
+                this.bravioTrackRecorders.set(id, recorder);
+                // MEET-33-2: the recorder stops itself when the producer closes, so the map has
+                // to let go of it too. Otherwise a long meeting accumulates an entry per person
+                // who ever spoke, and the teardown walks a list of recorders that finished
+                // hours ago.
+                recorder.consumer.once('producerclose', () => this.bravioTrackRecorders.delete(id));
+                recorder.consumer.once('transportclose', () => this.bravioTrackRecorders.delete(id));
             })
             .catch((error) => log.error('[bravio] per-track recording threw', { error: error.message }));
 

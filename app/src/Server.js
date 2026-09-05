@@ -95,6 +95,7 @@ const Host = require('./Host');
 const Room = require('./Room');
 const Peer = require('./Peer');
 const ServerApi = require('./ServerApi');
+const { sweepOrphanedTracks } = require('./TrackRecorder');
 const Logger = require('./Logger');
 const Validator = require('./Validator');
 const HtmlInjector = require('./HtmlInjector');
@@ -635,6 +636,22 @@ function OIDCAuth(req, res, next) {
 }
 
 function startServer() {
+    // bravio (MEET-33-2): clear the litter a crash leaves behind, once, at startup.
+    //
+    // An ffmpeg started by this process dies with it, because it is a child and this container
+    // has no init to adopt it. What survives is the litter: an `.sdp` beside every recording that
+    // was in flight, and a zero-byte `.ogg` for any track that never got its trailer. Neither is
+    // readable by anything, and nothing else would ever remove them.
+    //
+    // Here rather than beside the other track helpers, because those live inside the socket
+    // connection handler and this must happen once for the process, not once per person who
+    // connects.
+    try {
+        sweepOrphanedTracks(dir.rec);
+    } catch (error) {
+        log.warn('[bravio] orphaned track sweep failed', { error: error.message });
+    }
+
     // Start the app
     app.set('trust proxy', trustProxy); // Enables trust for proxy headers (e.g., X-Forwarded-For) based on the trustProxy setting
     app.use(helmet.noSniff()); // Enable content type sniffing prevention
