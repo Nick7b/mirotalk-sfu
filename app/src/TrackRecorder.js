@@ -24,6 +24,7 @@
  */
 
 const { spawn } = require('child_process');
+const { v4: uuidv4 } = require('uuid');
 const dgram = require('dgram');
 const fs = require('fs');
 const path = require('path');
@@ -87,6 +88,24 @@ function buildSdp(port, codec) {
 }
 
 /**
+ * The sidecar that says whose voice is in the file beside it (MEET-33-3).
+ *
+ * Written atomically, because the cockpit watches this directory and a half-written manifest read
+ * mid-write is a track attributed to nobody. Failing to write one is logged and not thrown: a
+ * recording with no manifest is a question for a person, and losing the audio as well because the
+ * label could not be saved would be the wrong trade.
+ */
+function writeManifest(manifestPath, data) {
+    try {
+        const temporary = `${manifestPath}.tmp`;
+        fs.writeFileSync(temporary, JSON.stringify(data, null, 2));
+        fs.renameSync(temporary, manifestPath);
+    } catch (error) {
+        log.warn('[bravio] could not write a track manifest', { manifestPath, error: error.message });
+    }
+}
+
+/**
  * Resolve once something is listening on this UDP port, or throw.
  *
  * Asked by trying to bind it ourselves: a bind that FAILS with EADDRINUSE is proof that ffmpeg
@@ -130,11 +149,21 @@ async function startTrackRecording(room, peerName, producer, directory) {
     if (!perTrackEnabled() || producer.kind !== 'audio') return null;
 
     const port = claimPort();
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    // A provisional name. MEET-33-3 is where the cockpit gets something it can read without
-    // guessing; this is only so a file on disk can be told from another file on disk.
-    const safeName = String(peerName || 'onbekend').replace(/[^A-Za-z0-9_-]/g, '_');
-    const file = path.join(directory, `Track_${room.id}_${safeName}_${stamp}.ogg`);
+    // MEET-33-3: THE NAME IDENTIFIES THE FILE, THE MANIFEST SAYS WHAT IS IN IT.
+    //
+    // The first version put the peer name in the file name, which meant mangling it to survive a
+    // filesystem: spaces to underscores, anything non-ASCII dropped. Reading a person back out of
+    // that is guessing, and MEET-5 already taught this lesson from the other side, where the
+    // browser's local clock was baked into the recording name and lied about when the meeting
+    // happened.
+    //
+    // So the name carries only a uuid, and everything a reader needs is in a JSON sidecar written
+    // beside it: the room, the peer verbatim, and the times from THIS server's clock rather than
+    // any browser's.
+    const trackId = uuidv4();
+    const file = path.join(directory, `Track_${room.id}_${trackId}.ogg`);
+    const manifestPath = path.join(directory, `Track_${room.id}_${trackId}.json`);
+    const startedAt = new Date().toISOString();
 
     let transport = null;
     let consumer = null;
@@ -233,7 +262,33 @@ async function startTrackRecording(room, peerName, producer, directory) {
                 log.warn('[bravio] track flow check failed', { peer: peerName, error: error.message });
             }
         }, 5000);
-        const recorder = { file, sdpPath, port, transport, consumer, child, peerName, stopping: null };
+        // Written now rather than at the end, so a recorder that dies with the process still
+        // leaves behind something that says whose voice is in the file next to it.
+        writeManifest(manifestPath, {
+            room: room.id,
+            trackId,
+            peerName: String(peerName ?? ''),
+            producerId: producer.id,
+            startedAt,
+            endedAt: null,
+            file: path.basename(file),
+        });
+
+        const recorder = {
+            file,
+            sdpPath,
+            manifestPath,
+            port,
+            transport,
+            consumer,
+            child,
+            peerName,
+            room: room.id,
+            trackId,
+            startedAt,
+            producerId: producer.id,
+            stopping: null,
+        };
 
         // MEET-33-2: mediasoup says when this is over, so nothing here has to watch MiroTalk's
         // own bookkeeping for it. `producerclose` fires when the participant stops sending, which
@@ -325,6 +380,18 @@ async function stopTrackRecordingOnce(recorder) {
     try { fs.rmSync(sdpPath, { force: true }); } catch { /* nothing to remove */ }
     releasePort(port);
     const bytes = fs.existsSync(file) ? fs.statSync(file).size : 0;
+    // The manifest is completed rather than replaced, so whatever was written at the start
+    // survives a stop that goes wrong.
+    writeManifest(recorder.manifestPath, {
+        room: recorder.room,
+        trackId: recorder.trackId,
+        peerName: String(recorder.peerName ?? ''),
+        producerId: recorder.producerId,
+        startedAt: recorder.startedAt,
+        endedAt: new Date().toISOString(),
+        file: path.basename(file),
+        bytes,
+    });
     log.info('[bravio] per-track recording stopped', { file, bytes });
     return { file, bytes };
 }
@@ -350,10 +417,16 @@ function sweepOrphanedTracks(directory) {
             if (name.endsWith('.sdp')) {
                 fs.rmSync(full, { force: true });
                 result.sdp += 1;
+            } else if (name.endsWith('.tmp')) {
+                // A manifest that was being written when the process died.
+                fs.rmSync(full, { force: true });
+                result.sdp += 1;
             } else if (name.endsWith('.ogg') && fs.statSync(full).size === 0) {
                 // A zero-byte track is a recorder that was interrupted before ffmpeg wrote
-                // anything. There is no audio in it to lose.
+                // anything. There is no audio in it to lose, and its manifest describes nothing,
+                // so both go.
                 fs.rmSync(full, { force: true });
+                fs.rmSync(full.replace(/\.ogg$/, '.json'), { force: true });
                 result.empty += 1;
             }
         } catch (error) {
