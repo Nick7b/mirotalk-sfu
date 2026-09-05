@@ -208,6 +208,31 @@ async function startTrackRecording(room, peerName, producer, directory) {
         // "never sent anything" from "sent nothing while we were listening".
         consumer.on('producerpause', () => log.warn('[bravio] track producer paused', { peer: peerName }));
         consumer.on('producerresume', () => log.warn('[bravio] track producer resumed', { peer: peerName }));
+
+        // MEET-33-1: ask mediasoup what it actually sent, five seconds in. The port-wait fix was
+        // built on a theory about ICMP and connected UDP sockets, and it did not change the
+        // result, so the next step is a measurement rather than a third theory. bytesSent above
+        // zero puts the fault after this transport, at ffmpeg; zero puts it before, at the
+        // consumer.
+        setTimeout(async () => {
+            try {
+                const [transportStats, consumerStats] = await Promise.all([
+                    transport.getStats(),
+                    consumer.getStats(),
+                ]);
+                log.info('[bravio] track flow check', {
+                    peer: peerName,
+                    port,
+                    transportBytesSent: transportStats?.[0]?.bytesSent,
+                    consumerBytesSent: consumerStats?.[0]?.byteCount ?? consumerStats?.[0]?.bytesSent,
+                    consumerPacketCount: consumerStats?.[0]?.packetCount,
+                    consumerPaused: consumer.paused,
+                    producerPaused: consumer.producerPaused,
+                });
+            } catch (error) {
+                log.warn('[bravio] track flow check failed', { peer: peerName, error: error.message });
+            }
+        }, 5000);
         return { file, sdpPath, port, transport, consumer, child, peerName };
     } catch (error) {
         log.error('[bravio] per-track recording failed to start', {
