@@ -1,7 +1,9 @@
 'use strict';
 
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
 const config = require('./config');
+const { startTrackRecording, stopTrackRecording } = require('./TrackRecorder');
 const RtmpStreaming = require('./RtmpStreaming');
 const Logger = require('./Logger');
 const log = new Logger('Room');
@@ -40,6 +42,8 @@ module.exports = class Room {
         this.bravioSpeaker = null;
         this.bravioSpeakerAt = 0;
         this.bravioSilenceTimer = null;
+        /** Producer id to its own recorder (MEET-33). Empty unless per-track recording is on. */
+        this.bravioTrackRecorders = new Map();
         this.onSpeakerChange = null;
         // ##########################
         this._isBroadcasting = false;
@@ -288,7 +292,29 @@ module.exports = class Room {
         }
     }
 
+    /**
+     * bravio (MEET-33-1): stop every per-track recorder this room started.
+     *
+     * Room teardown only. Stopping when a single producer closes, and surviving a crash between
+     * the two, is MEET-33-2; what this covers is the guaranteed leak, which is that a room ending
+     * would otherwise leave one ffmpeg per participant running for ever. Awaited, because each
+     * stop is what lets ffmpeg write its trailer, and a file with no duration is the bug MEET-16
+     * had to write a remux to repair.
+     */
+    async bravioStopAllTracks() {
+        const recorders = [...this.bravioTrackRecorders.values()];
+        this.bravioTrackRecorders.clear();
+        for (const recorder of recorders) {
+            try {
+                await stopTrackRecording(recorder);
+            } catch (error) {
+                log.error('[bravio] stopping a track recorder failed', { error: error.message });
+            }
+        }
+    }
+
     async close() {
+        await this.bravioStopAllTracks();
         this.closeAudioLevelObserver();
         this.closeActiveSpeakerObserver();
         this.rtmpStreaming.closeAll();
@@ -919,6 +945,19 @@ module.exports = class Room {
         }
 
         const { id } = peerProducer;
+
+        // bravio (MEET-33-1): capture this person's audio on its own, straight from the SFU.
+        //
+        // Deliberately not awaited. Starting a recorder involves a transport, a consumer and a
+        // spawned process, and a peer who is trying to speak should not wait on any of that; if
+        // it fails it is logged and the meeting carries on with the browser recording it always
+        // had. `startTrackRecording` answers null when the feature is off or the producer is not
+        // audio, so this line does not need to know the rules.
+        startTrackRecording(this, peer_name, peerProducer, path.join(__dirname, config.media.recording.dir))
+            .then((recorder) => {
+                if (recorder) this.bravioTrackRecorders.set(id, recorder);
+            })
+            .catch((error) => log.error('[bravio] per-track recording threw', { error: error.message }));
 
         const producerTransport = peer.getTransport(producerTransportId);
 

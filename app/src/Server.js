@@ -5040,6 +5040,11 @@ function startServer() {
             if (room.getPeersCount() === 0) {
                 //
                 stopRTMPActiveStreams(isPresenter, room);
+                // bravio (MEET-33-1): stop the per-track recorders before the room is dropped.
+                // Room.close() is never called anywhere in this file, so the room is simply
+                // deleted from the map and collected; without this the ffmpeg processes it
+                // started would outlive it.
+                bravioStopRoomTracks(room);
 
                 roomList.delete(socket.room_id);
 
@@ -5108,6 +5113,11 @@ function startServer() {
             if (room.getPeersCount() === 0) {
                 //
                 stopRTMPActiveStreams(isPresenter, room);
+                // bravio (MEET-33-1): stop the per-track recorders before the room is dropped.
+                // Room.close() is never called anywhere in this file, so the room is simply
+                // deleted from the map and collected; without this the ffmpeg processes it
+                // started would outlive it.
+                bravioStopRoomTracks(room);
 
                 roomList.delete(socket.room_id);
 
@@ -5176,6 +5186,21 @@ function startServer() {
                 .post(webhook.url, { event: 'recordingStatus', data }, { timeout: 5000 })
                 .then((response) => log.debug('Recording status tracked:', response.data))
                 .catch((error) => log.error('Error tracking recording status:', error.message));
+        }
+
+        /**
+         * bravio: stop every per-track recorder a room started (MEET-33-1).
+         *
+         * Fire and forget on purpose: a person leaving a meeting should not wait on ffmpeg
+         * writing a trailer, and every failure inside is logged by the recorder itself. What
+         * must not happen is the room being dropped with the processes still running, which is
+         * what this prevents at all three places the room is deleted.
+         */
+        function bravioStopRoomTracks(room) {
+            if (!room || typeof room.bravioStopAllTracks !== 'function') return;
+            room.bravioStopAllTracks().catch((error) =>
+                log.error('[bravio] stopping per-track recorders failed', { error: error.message }),
+            );
         }
 
         /**
@@ -5842,6 +5867,7 @@ async function gracefulShutdown(signal) {
                     room.removePeer(peerId);
                 }
 
+                bravioStopRoomTracks(room);
                 roomList.delete(roomId);
             } catch (err) {
                 log.error(`Error closing room ${roomId}:`, err.message);

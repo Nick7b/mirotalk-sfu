@@ -234,6 +234,20 @@ module.exports = {
              * recorded and somebody sitting alone in a room waiting is not.
              */
             autoFrom: parseInt(process.env.RECORDING_AUTO_FROM, 10) || 0,
+            /**
+             * bravio: also record each participant's audio on its own, from the SFU (MEET-33).
+             *
+             * The ordinary recording is made in the presenter's browser out of the audio elements
+             * the page is playing, so every voice has been encoded by WebRTC, decoded, mixed with
+             * the others and encoded again before a transcriber ever sees it. A PlainTransport
+             * consuming a producer gets that person's stream as it arrives here: one speaker,
+             * encoded once.
+             *
+             * OFF BY DEFAULT and additive: the browser recording keeps working exactly as it did.
+             * A room where everyone shares one microphone is still a mixed room, and a capture
+             * path that cannot be turned off is a new way to lose a conversation.
+             */
+            perTrack: process.env.RECORDING_PER_TRACK === 'true',
             uploadToS3: process.env.RECORDING_UPLOAD_TO_S3 === 'true',
             endpoint: process.env.RECORDING_ENDPOINT || '',
             dir: process.env.RECORDING_DIR || '../rec',
