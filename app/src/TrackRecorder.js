@@ -260,19 +260,34 @@ async function startTrackRecording(room, peerName, producer, directory) {
 async function stopTrackRecording(recorder) {
     if (!recorder) return null;
     const { child, consumer, transport, port, sdpPath, file } = recorder;
+    // Stop the media first, then LET FFMPEG NOTICE. Closing the consumer and the transport ends
+    // the packets; ffmpeg's RTP reader then times out by itself, writes its trailer and exits
+    // with a complete file.
     try { consumer?.close(); } catch { /* already closed */ }
     try { transport?.close(); } catch { /* already closed */ }
     await new Promise((resolve) => {
         if (!child || child.exitCode !== null) return resolve();
-        const done = setTimeout(() => {
+        // MEASURED, and it is why this is not a one-line stop. Across four probe runs the file
+        // that came out complete was ALWAYS the one whose ffmpeg exited on its own, when its
+        // peer left and the RTP stream stopped; the file that came out EMPTY was always the one
+        // this function stopped. Signalling ffmpeg while it is still mid-stream loses everything
+        // buffered, and with `-c copy` into ogg that turned out to be the whole file.
+        //
+        // So the signals are a backstop rather than the mechanism. ffmpeg took about seven
+        // seconds to notice silence in the runs above, so fifteen is generous without being a
+        // hang, and SIGINT then SIGKILL only ever run when it has not managed by itself.
+        const kill = setTimeout(() => {
             try { child.kill('SIGKILL'); } catch { /* already gone */ }
-            resolve();
-        }, 5000);
+        }, 20000);
+        const nudge = setTimeout(() => {
+            log.warn('[bravio] track recorder did not stop on its own, signalling', { file });
+            try { child.kill('SIGINT'); } catch { /* already gone */ }
+        }, 15000);
         child.once('close', () => {
-            clearTimeout(done);
+            clearTimeout(nudge);
+            clearTimeout(kill);
             resolve();
         });
-        try { child.kill('SIGINT'); } catch { clearTimeout(done); resolve(); }
     });
     try { fs.rmSync(sdpPath, { force: true }); } catch { /* nothing to remove */ }
     releasePort(port);
