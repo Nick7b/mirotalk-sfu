@@ -58,6 +58,55 @@ function releasePort(port) {
     takenPorts.delete(port);
 }
 
+/**
+ * Keep ffmpeg's demuxer fed while the participant is silent (MEET-53).
+ *
+ * ffmpeg's SDP demuxer gives up after ten seconds without a packet on either of its ports. It is
+ * hard-coded, not an option, and measured at twelve seconds on this box. A muted producer sends
+ * no RTP at all, and with DTX on a silent one sends almost none, so on the first real call
+ * (7-9-2026) a fifteen-second mute ended a recording that the meeting then carried on without
+ * for eight minutes, while its manifest went on to claim the whole meeting.
+ *
+ * Any datagram resets that timeout, and an RTCP receiver report is one the demuxer parses and
+ * ignores. So one goes to the RTCP port every three seconds for as long as the recorder lives.
+ * Measured: a receiver with this survived a fifteen-second gap and captured both sides of it in
+ * one file; without it, the same receiver died twelve seconds in.
+ *
+ * It is the FIRST thing stopped at stop time, deliberately. The stop mechanism is to close the
+ * media and let ffmpeg notice the silence and finish its own file, and this is the silence it
+ * has to be allowed to notice.
+ */
+const KEEPALIVE_MS = 3000;
+// An RTCP receiver report: version 2, no report blocks, and an SSRC that belongs to nobody.
+const KEEPALIVE_PACKET = Buffer.from([0x80, 0xc9, 0x00, 0x01, 0x62, 0x72, 0x61, 0x76]);
+
+function startKeepalive(rtcpPort) {
+    const socket = dgram.createSocket('udp4');
+    // A keepalive that cannot send leaves the recorder exactly where it was before MEET-53. That
+    // is a degradation worth a log line, not a reason to stop recording.
+    socket.on('error', (error) =>
+        log.warn('[bravio] track keepalive socket error', { rtcpPort, error: error.message })
+    );
+    const timer = setInterval(() => {
+        try {
+            socket.send(KEEPALIVE_PACKET, rtcpPort, '127.0.0.1');
+        } catch {
+            /* logged above */
+        }
+    }, KEEPALIVE_MS);
+    timer.unref?.();
+    return {
+        stop() {
+            clearInterval(timer);
+            try {
+                socket.close();
+            } catch {
+                /* already closed */
+            }
+        },
+    };
+}
+
 /** Is per-track recording switched on for this instance? */
 function perTrackEnabled() {
     return Boolean(config?.media?.recording?.perTrack);
@@ -120,7 +169,11 @@ async function waitForPort(port, timeoutMs = 8000) {
             const probe = dgram.createSocket('udp4');
             probe.once('error', () => {
                 // EADDRINUSE: somebody else has it, which here means ffmpeg.
-                try { probe.close(); } catch { /* never opened */ }
+                try {
+                    probe.close();
+                } catch {
+                    /* never opened */
+                }
                 resolve(true);
             });
             probe.bind(port, '127.0.0.1', () => {
@@ -168,6 +221,7 @@ async function startTrackRecording(room, peerName, producer, directory) {
     let transport = null;
     let consumer = null;
     let child = null;
+    let keepalive = null;
 
     try {
         transport = await room.router.createPlainTransport({
@@ -190,18 +244,23 @@ async function startTrackRecording(room, peerName, producer, directory) {
         child = spawn(
             process.env.FFMPEG_BIN || 'ffmpeg',
             [
-                '-loglevel', 'error',
-                '-protocol_whitelist', 'file,udp,rtp',
-                '-i', sdpPath,
+                '-loglevel',
+                'error',
+                '-protocol_whitelist',
+                'file,udp,rtp',
+                '-i',
+                sdpPath,
                 // Copied, not re-encoded. The whole point of this landing is to stop encoding
                 // the same speech twice, so the one thing this must not do is encode it again.
-                '-c:a', 'copy',
-                '-y', file,
+                '-c:a',
+                'copy',
+                '-y',
+                file,
             ],
-            { stdio: ['ignore', 'ignore', 'pipe'] },
+            { stdio: ['ignore', 'ignore', 'pipe'] }
         );
         child.stderr.on('data', (data) =>
-            log.warn('[bravio] track recorder said', { room: room.id, peer: peerName, err: String(data).slice(0, 200) }),
+            log.warn('[bravio] track recorder said', { room: room.id, peer: peerName, err: String(data).slice(0, 200) })
         );
 
         // WAIT FOR THE PORT, DO NOT SLEEP AND HOPE. Measured on the dev box, twice: with a flat
@@ -219,6 +278,8 @@ async function startTrackRecording(room, peerName, producer, directory) {
 
         await transport.connect({ ip: '127.0.0.1', port, rtcpPort: port + 1 });
         await consumer.resume();
+        // From here until stop, ffmpeg must never see ten quiet seconds (MEET-53).
+        keepalive = startKeepalive(port + 1);
 
         // MEET-33-1: the first probe captured the second peer and nothing at all from the first,
         // so the state of the producer at the moment of consuming is worth having in the log
@@ -245,10 +306,7 @@ async function startTrackRecording(room, peerName, producer, directory) {
         // consumer.
         setTimeout(async () => {
             try {
-                const [transportStats, consumerStats] = await Promise.all([
-                    transport.getStats(),
-                    consumer.getStats(),
-                ]);
+                const [transportStats, consumerStats] = await Promise.all([transport.getStats(), consumer.getStats()]);
                 log.info('[bravio] track flow check', {
                     peer: peerName,
                     port,
@@ -282,12 +340,18 @@ async function startTrackRecording(room, peerName, producer, directory) {
             transport,
             consumer,
             child,
+            keepalive,
             peerName,
             room: room.id,
             trackId,
             startedAt,
             producerId: producer.id,
             stopping: null,
+            // Set only when ffmpeg exits without being asked (MEET-53); the manifest then ends
+            // the track at that moment rather than at the meeting's end.
+            interruptedAt: null,
+            exitCode: null,
+            exitSignal: null,
         };
 
         // MEET-33-2: mediasoup says when this is over, so nothing here has to watch MiroTalk's
@@ -301,13 +365,39 @@ async function startTrackRecording(room, peerName, producer, directory) {
         consumer.once('producerclose', () => {
             log.info('[bravio] track producer closed, stopping recorder', { peer: peerName });
             stopTrackRecording(recorder).catch((error) =>
-                log.error('[bravio] stopping on producerclose failed', { error: error.message }),
+                log.error('[bravio] stopping on producerclose failed', { error: error.message })
             );
         });
         consumer.once('transportclose', () => {
             stopTrackRecording(recorder).catch(() => {
                 /* the room is going away; the room teardown logs its own failures */
             });
+        });
+
+        // MEET-53: ffmpeg leaving on its own is the failure the first real call found, and the
+        // part of it that did the lasting damage was not the exit but the silence about it. The
+        // recorder went on believing in a track that had stopped, and at the meeting's end wrote
+        // a manifest claiming the whole meeting. So an exit nobody asked for is logged at error
+        // level, the moment is kept, and the ordinary idempotent stop runs from here: it will
+        // find the process already gone, release everything, and write a manifest that ends the
+        // track when it actually ended and says that it was interrupted.
+        //
+        // During a stop this fires too, after `stopping` has been set, and does nothing.
+        child.once('close', (code, signal) => {
+            if (recorder.stopping) return;
+            recorder.interruptedAt = new Date().toISOString();
+            recorder.exitCode = code;
+            recorder.exitSignal = signal;
+            log.error('[bravio] track recorder exited on its own, the track ends here', {
+                room: room.id,
+                peer: peerName,
+                file,
+                code,
+                signal,
+            });
+            stopTrackRecording(recorder).catch((error) =>
+                log.error('[bravio] stopping after an unexpected exit failed', { error: error.message })
+            );
         });
 
         return recorder;
@@ -319,9 +409,26 @@ async function startTrackRecording(room, peerName, producer, directory) {
         });
         // Everything or nothing: a half-built recorder holds a port and a transport and records
         // no audio, which is the worst of both.
-        try { child?.kill('SIGKILL'); } catch { /* already gone */ }
-        try { consumer?.close(); } catch { /* already closed */ }
-        try { transport?.close(); } catch { /* already closed */ }
+        try {
+            keepalive?.stop();
+        } catch {
+            /* never started */
+        }
+        try {
+            child?.kill('SIGKILL');
+        } catch {
+            /* already gone */
+        }
+        try {
+            consumer?.close();
+        } catch {
+            /* already closed */
+        }
+        try {
+            transport?.close();
+        } catch {
+            /* already closed */
+        }
         releasePort(port);
         return null;
     }
@@ -347,12 +454,27 @@ async function stopTrackRecording(recorder) {
 }
 
 async function stopTrackRecordingOnce(recorder) {
-    const { child, consumer, transport, port, sdpPath, file } = recorder;
-    // Stop the media first, then LET FFMPEG NOTICE. Closing the consumer and the transport ends
-    // the packets; ffmpeg's RTP reader then times out by itself, writes its trailer and exits
-    // with a complete file.
-    try { consumer?.close(); } catch { /* already closed */ }
-    try { transport?.close(); } catch { /* already closed */ }
+    const { child, consumer, transport, port, sdpPath, file, keepalive } = recorder;
+    // The keepalive first (MEET-53): as long as it runs, ffmpeg never sees the silence that the
+    // next two lines are there to create.
+    try {
+        keepalive?.stop();
+    } catch {
+        /* never started */
+    }
+    // Stop the media, then LET FFMPEG NOTICE. Closing the consumer and the transport ends the
+    // packets; ffmpeg's RTP reader then times out by itself, writes its trailer and exits with
+    // a complete file.
+    try {
+        consumer?.close();
+    } catch {
+        /* already closed */
+    }
+    try {
+        transport?.close();
+    } catch {
+        /* already closed */
+    }
     await new Promise((resolve) => {
         if (!child || child.exitCode !== null) return resolve();
         // MEASURED, and it is why this is not a one-line stop. Across four probe runs the file
@@ -365,11 +487,19 @@ async function stopTrackRecordingOnce(recorder) {
         // seconds to notice silence in the runs above, so fifteen is generous without being a
         // hang, and SIGINT then SIGKILL only ever run when it has not managed by itself.
         const kill = setTimeout(() => {
-            try { child.kill('SIGKILL'); } catch { /* already gone */ }
+            try {
+                child.kill('SIGKILL');
+            } catch {
+                /* already gone */
+            }
         }, 20000);
         const nudge = setTimeout(() => {
             log.warn('[bravio] track recorder did not stop on its own, signalling', { file });
-            try { child.kill('SIGINT'); } catch { /* already gone */ }
+            try {
+                child.kill('SIGINT');
+            } catch {
+                /* already gone */
+            }
         }, 15000);
         child.once('close', () => {
             clearTimeout(nudge);
@@ -377,22 +507,31 @@ async function stopTrackRecordingOnce(recorder) {
             resolve();
         });
     });
-    try { fs.rmSync(sdpPath, { force: true }); } catch { /* nothing to remove */ }
+    try {
+        fs.rmSync(sdpPath, { force: true });
+    } catch {
+        /* nothing to remove */
+    }
     releasePort(port);
     const bytes = fs.existsSync(file) ? fs.statSync(file).size : 0;
     // The manifest is completed rather than replaced, so whatever was written at the start
     // survives a stop that goes wrong.
+    // MEET-53: the track ends when the audio stopped, which is the moment ffmpeg left if it left
+    // on its own. The meeting's end was written here before, and on 7-9-2026 that put eight
+    // minutes nobody had recorded inside a track's claimed span.
+    const interrupted = recorder.interruptedAt !== null;
     writeManifest(recorder.manifestPath, {
         room: recorder.room,
         trackId: recorder.trackId,
         peerName: String(recorder.peerName ?? ''),
         producerId: recorder.producerId,
         startedAt: recorder.startedAt,
-        endedAt: new Date().toISOString(),
+        endedAt: recorder.interruptedAt ?? new Date().toISOString(),
         file: path.basename(file),
         bytes,
+        ...(interrupted ? { interrupted: true, exitCode: recorder.exitCode, exitSignal: recorder.exitSignal } : {}),
     });
-    log.info('[bravio] per-track recording stopped', { file, bytes });
+    log.info('[bravio] per-track recording stopped', { file, bytes, interrupted });
     return { file, bytes };
 }
 
