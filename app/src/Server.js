@@ -2528,8 +2528,8 @@ function startServer() {
             if (existingPeer) {
                 room.removePeer(socket.id);
 
-            // bravio: the room just shrank. Below the threshold, recording stops on its own.
-            autoRecordingCheck(room);
+                // bravio: the room just shrank. Below the threshold, recording stops on its own.
+                autoRecordingCheck(room);
             }
 
             room.addPeer(new Peer(socket.id, data));
@@ -4030,6 +4030,8 @@ function startServer() {
             const data = checkXSS(dataObject);
             const room = roomList.get(socket.room_id);
             const peer = room?.getPeer(socket.id);
+            // MEET-57: the browser answered, whatever it said; the silence timer is off.
+            clearRecordingAnswerTimer(room);
             log.info('[bravio] recording status', {
                 room: socket.room_id,
                 peer: peer?.peer_info?.peer_name,
@@ -4041,7 +4043,7 @@ function startServer() {
                 String(data?.state || 'unknown'),
                 String(data?.reason || ''),
                 room?.getPeers()?.size || 0,
-                peer?.peer_info?.peer_name || '',
+                peer?.peer_info?.peer_name || ''
             );
         });
 
@@ -4178,7 +4180,7 @@ function startServer() {
                         peer_name: peer?.peer_info?.peer_name || '',
                         api_secret_key: hostCfg.users_api_secret_key,
                     },
-                    { timeout: 120000 },
+                    { timeout: 120000 }
                 );
                 const message = response?.data?.message || 'No answer.';
                 log.info('[bravio] assistant answered', { room: socket.room_id, chars: String(message).length });
@@ -5186,7 +5188,65 @@ function startServer() {
             room.sendToAll('recordingCommand', { action, peers });
             // bravio: and tell the cockpit we asked, so "no recording" can be told apart from
             // "we never asked for one".
-            if (action === 'start') sendRecordingWebhook(room.id, 'commanded', '', peers);
+            //
+            // MEET-57: and say WHY nothing may come of it. The command goes to everyone, but
+            // only a presenter's browser acts on it. On 7-9-2026 a real meeting sat at
+            // "commanded" with an empty reason for ever, and nothing could say whether nobody
+            // was there to record or a browser never answered. Both are facts this server has:
+            // it knows who is a presenter, and it knows whether a status ever came back.
+            if (action === 'start') {
+                const presenter = bravioPresenterIn(room);
+                if (presenter === null) {
+                    sendRecordingWebhook(room.id, 'commanded', 'no presenter in the room, so nobody can record', peers);
+                } else {
+                    sendRecordingWebhook(room.id, 'commanded', '', peers, presenter);
+                    armRecordingAnswerTimer(room, peers, presenter);
+                }
+            }
+        }
+        /**
+         * bravio: the presenter in a room, by name, or null when there is none (MEET-57).
+         */
+        function bravioPresenterIn(room) {
+            for (const peer of room.getPeers().values()) {
+                if (peer.peer_presenter === true || peer.peer_info?.peer_presenter === true) {
+                    return peer.peer_info?.peer_name || '';
+                }
+            }
+            return null;
+        }
+        /**
+         * bravio: a recording that was commanded and never answered is reported as such
+         * (MEET-57).
+         *
+         * The presenter's browser reports `started`, `paused` or `failed` within a second or two
+         * of the command. Thirty seconds of nothing means the command was not acted on: the tab
+         * was in the background, the browser refused, the presenter left before answering. The
+         * cockpit gets `unanswered` with the presenter's name, instead of a `commanded` that
+         * never changes and explains nothing.
+         */
+        const RECORDING_ANSWER_MS = 30000;
+        function armRecordingAnswerTimer(room, peers, presenter) {
+            clearRecordingAnswerTimer(room);
+            room.bravioRecordingAnswer = setTimeout(() => {
+                room.bravioRecordingAnswer = null;
+                if (!roomList.has(room.id)) return;
+                log.warn('[bravio] recording commanded, presenter never answered', { room: room.id, presenter });
+                sendRecordingWebhook(
+                    room.id,
+                    'unanswered',
+                    `the presenter's browser (${presenter}) did not report a recording within 30 seconds`,
+                    peers,
+                    presenter
+                );
+            }, RECORDING_ANSWER_MS);
+            room.bravioRecordingAnswer.unref?.();
+        }
+        function clearRecordingAnswerTimer(room) {
+            if (room?.bravioRecordingAnswer) {
+                clearTimeout(room.bravioRecordingAnswer);
+                room.bravioRecordingAnswer = null;
+            }
         }
 
         /**
@@ -5216,7 +5276,7 @@ function startServer() {
         function bravioStopRoomTracks(room) {
             if (!room || typeof room.bravioStopAllTracks !== 'function') return;
             room.bravioStopAllTracks().catch((error) =>
-                log.error('[bravio] stopping per-track recorders failed', { error: error.message }),
+                log.error('[bravio] stopping per-track recorders failed', { error: error.message })
             );
         }
 
