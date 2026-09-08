@@ -4867,7 +4867,9 @@ function setVideoButtonsDisabled(disabled) {
 }
 
 function setSpeakerVolume(value) {
-    const volume = Math.min(100, Math.max(0, Number(value) || 0));
+    // 300 rather than 100: the slider is the only way to make a quiet talker louder, and it could
+    // not go past unity at all before 8-9-2026. See MAX_OUTPUT_VOLUME in RoomClient.js.
+    const volume = Math.min(300, Math.max(0, Number(value) || 0));
 
     if (speakerVolume) speakerVolume.value = volume;
     if (speakerVolumeValue) speakerVolumeValue.textContent = `${volume}%`;
@@ -5521,7 +5523,7 @@ function setupQuickDeviceSwitchDropdowns() {
         volumeSlider.className = 'output-volume-slider';
         volumeSlider.type = 'range';
         volumeSlider.min = '0';
-        volumeSlider.max = '100';
+        volumeSlider.max = '300';
         volumeSlider.step = '1';
         volumeSlider.value = speakerVolume ? speakerVolume.value : 100;
         volumeRow.appendChild(volumeSlider);

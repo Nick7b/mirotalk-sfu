@@ -237,6 +237,16 @@ const VideoAI = {
 // Recording
 let recordedBlobs = [];
 
+/**
+ * How far above unity the output may be pushed (8-9-2026).
+ *
+ * Three, which is about ten decibels of headroom: enough to rescue a genuinely quiet talker and
+ * short of the point where a normal one becomes unpleasant. There is no limiter behind it, so a
+ * loud speaker at three times will clip, and that is the trade a person makes knowingly by moving
+ * a slider that reads three hundred percent.
+ */
+const MAX_OUTPUT_VOLUME = 3;
+
 class RoomClient {
     constructor(
         localAudioEl,
@@ -482,7 +492,8 @@ class RoomClient {
         this.audioProducerId = null;
         this.audioConsumers = new Map();
 
-        this.masterOutputVolume = 1; // 0..1 master speaker volume, multiplied with each per-peer volume
+        // 0..MAX_OUTPUT_VOLUME master speaker volume, multiplied with each per-peer volume.
+        this.masterOutputVolume = 1;
 
         this.peers = new Map();
         this.consumers = new Map();
@@ -11164,7 +11175,7 @@ class RoomClient {
 
     setMasterOutputVolume(volume) {
         const value = Number(volume);
-        this.masterOutputVolume = Math.min(1, Math.max(0, isNaN(value) ? 1 : value));
+        this.masterOutputVolume = Math.min(MAX_OUTPUT_VOLUME, Math.max(0, isNaN(value) ? 1 : value));
         this.getOutputAudioElements().forEach((elem) => this.applyOutputVolume(elem));
     }
 
@@ -11172,10 +11183,17 @@ class RoomClient {
         if (!audioPlayer) return;
 
         const peerVolume = audioPlayer.dataset.peerVolume !== undefined ? Number(audioPlayer.dataset.peerVolume) : 1;
-        const volume = Math.min(1, Math.max(0, (isNaN(peerVolume) ? 1 : peerVolume) * this.masterOutputVolume));
+        const volume = Math.min(
+            MAX_OUTPUT_VOLUME,
+            Math.max(0, (isNaN(peerVolume) ? 1 : peerVolume) * this.masterOutputVolume)
+        );
 
         const gainNode = this.getOutputGainNode(audioPlayer, volume);
         if (gainNode) {
+            // The element's own volume multiplies BEFORE the graph, so it has to be neutral or
+            // the two attenuate each other. It may have been set below one on an earlier pass,
+            // when this element was still on the plain path.
+            if (this.canSetElementVolume()) audioPlayer.volume = 1;
             gainNode.gain.value = volume;
             return;
         }
@@ -11184,11 +11202,13 @@ class RoomClient {
             audioPlayer.muted = volume === 0;
             if (!audioPlayer.muted) {
                 // Adjust playback rate as volume on mobile devices
-                audioPlayer.playbackRate = Math.max(0.1, volume);
+                audioPlayer.playbackRate = Math.max(0.1, Math.min(1, volume));
             }
         } else {
-            // Set volume directly on desktop devices
-            audioPlayer.volume = volume;
+            // Set volume directly on desktop devices. `HTMLMediaElement.volume` throws above one,
+            // so a boost that could not get a gain node lands here as plain full volume rather
+            // than as an exception.
+            audioPlayer.volume = Math.min(1, volume);
         }
     }
 
@@ -11220,9 +11240,25 @@ class RoomClient {
     getOutputGainNode(elem, volume) {
         if (elem._outputGainNode) return elem._outputGainNode;
 
-        // Web Audio routing is engaged lazily and only where HTMLMediaElement.volume is
-        // read-only (iOS), so the default full-volume output path stays untouched elsewhere.
-        if (volume >= 1 || elem._outputGainUnavailable || this.canSetElementVolume()) return null;
+        /*
+         * Web Audio routing is engaged lazily, in the two cases the plain path cannot serve.
+         *
+         * BELOW ONE where `HTMLMediaElement.volume` is read-only, which is iOS, and this is what
+         * the routing was originally written for.
+         *
+         * ABOVE ONE anywhere, because that is the only way to make a quiet talker louder. An
+         * element's volume is capped at one by the specification, so before this the application
+         * had no answer at all to "I can barely hear them": measured on a real call on 8-9-2026,
+         * both participants sent audio around -27 dB and the far end was left turning its
+         * operating system up to maximum, which is a remedy the application should not have had
+         * to borrow.
+         *
+         * Still lazy, and deliberately so. Attaching a MediaElementSourceNode moves the element's
+         * audio into a graph for good, and a suspended AudioContext then means silence rather
+         * than quiet. So the default path is untouched until somebody actually asks for more.
+         */
+        const needsGraph = volume > 1 || (volume < 1 && !this.canSetElementVolume());
+        if (!needsGraph || elem._outputGainUnavailable) return null;
 
         const audioContext = this.getOutputAudioContext();
         if (!audioContext) {
