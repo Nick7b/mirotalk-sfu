@@ -5185,7 +5185,18 @@ function startServer() {
             room.bravioAutoRecording = shouldRecord;
             const action = shouldRecord ? 'start' : 'pause';
             log.info('[bravio] auto recording', { room: room.id, peers, action });
-            room.sendToAll('recordingCommand', { action, peers });
+            if (action === 'pause') {
+                room.sendToAll('recordingCommand', { action, peers });
+            } else {
+                // bravio (MEET-74): sound only unless the cockpit says this meeting records the
+                // picture. Asked at every start, so a switch made during the meeting reaches the
+                // next one. When the answer arrives after the room already dropped below the
+                // threshold again, the start is not sent: a late start would undo that pause.
+                bravioRecordVideo(room.id).then((video) => {
+                    if (room.bravioAutoRecording !== true) return;
+                    room.sendToAll('recordingCommand', { action, peers, video });
+                });
+            }
             // bravio: and tell the cockpit we asked, so "no recording" can be told apart from
             // "we never asked for one".
             //
@@ -5641,6 +5652,25 @@ function startServer() {
         });
 
         return allowRoomAccess;
+    }
+
+    /**
+     * bravio (MEET-74): does the cockpit want the picture recorded for this room. False whenever
+     * it cannot say, because sound only is the default and a transcript needs nothing more.
+     */
+    async function bravioRecordVideo(room) {
+        if (!hostCfg.users_from_db || !hostCfg.api_room_exists) return false;
+        try {
+            const response = await axios.post(
+                hostCfg.api_room_exists,
+                { room, api_secret_key: hostCfg.users_api_secret_key },
+                { timeout: 5000 }
+            );
+            return response.data?.recordVideo === true;
+        } catch (error) {
+            log.error('[bravio] record video lookup failed', error.message);
+            return false;
+        }
     }
 
     async function roomExistsForUser(room) {

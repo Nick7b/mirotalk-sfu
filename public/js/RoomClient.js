@@ -8751,12 +8751,39 @@ class RoomClient {
                 }
             }, 1000);
 
+            // bravio (MEET-74): SOUND ONLY UNLESS THE MEETING ASKED FOR THE PICTURE. Everything the
+            // cockpit does with a recording is transcribe it, and the camera made the one-hour GRI
+            // call of 17-9-2026 a 698 MB file. The owner set audio as the default the same day.
+            if (this.recordVideo !== true) {
+                this.startAudioOnlyRecording(audioMixerTracks);
+                return;
+            }
+
             const recordingType = this.isMobileDevice ? 'camera' : document.getElementById('recordingTypeSelect').value;
             recordingType === 'screen'
                 ? this.startDesktopRecording(options, audioMixerTracks)
                 : this.startMobileRecording(options, audioMixerTracks);
         } catch (err) {
             this.handleRecordingError('Exception while creating MediaRecorder: ' + err);
+        }
+    }
+
+    /**
+     * bravio (MEET-74): the mixed room audio on its own, as WebM with Opus. The file keeps the
+     * .webm name and the Rec_ shape the cockpit watcher parses, so nothing downstream changes.
+     */
+    startAudioOnlyRecording(audioMixerTracks) {
+        try {
+            const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((type) =>
+                MediaRecorder.isTypeSupported(type)
+            );
+            const options = mimeType ? { mimeType, audioBitsPerSecond: 128000 } : { audioBitsPerSecond: 128000 };
+            recCodecs = mimeType || 'browser default';
+            this.mediaRecorder = new MediaRecorder(new MediaStream(audioMixerTracks), options);
+            console.log('Created audio-only MediaRecorder', this.mediaRecorder, 'with options', options);
+            this.initRecording();
+        } catch (err) {
+            this.handleRecordingError('Unable to record the audio: ' + err, false);
         }
     }
 
@@ -9294,6 +9321,8 @@ class RoomClient {
                 this.reportRecordingStatus('resumed');
             } else if (state === 'inactive') {
                 console.log('[bravio] auto recording start', data);
+                // bravio (MEET-74): the cockpit decides per meeting; anything but an explicit yes is sound only.
+                this.recordVideo = data.video === true;
                 this.startRecording();
             }
         }
