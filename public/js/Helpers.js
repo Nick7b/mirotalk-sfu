@@ -5,6 +5,7 @@ class MixedAudioRecorder {
         this.useGainNode = useGainNode;
         this.gainNode = null;
         this.audioSources = [];
+        this.sourcesByTrack = new Map();
         this.audioDestination = null;
         this.audioContext = this.createAudioContext();
     }
@@ -23,6 +24,7 @@ class MixedAudioRecorder {
 
     getMixedAudioStream(audioStreams) {
         this.audioSources = [];
+        this.sourcesByTrack = new Map();
 
         if (this.useGainNode) {
             this.gainNode = this.audioContext.createGain();
@@ -43,6 +45,7 @@ class MixedAudioRecorder {
                 audioSource.connect(this.gainNode);
             }
             this.audioSources.push(audioSource);
+            this.sourcesByTrack.set(stream.getAudioTracks()[0].id, audioSource);
         });
 
         this.audioDestination = this.audioContext.createMediaStreamDestination();
@@ -51,6 +54,39 @@ class MixedAudioRecorder {
         });
 
         return this.audioDestination.stream;
+    }
+
+    // bravio (MEET-73): THE MIX FOLLOWS THE ROOM, not the moment recording started.
+    //
+    // The mix used to be built once, from the audio elements present when the presenter began
+    // recording. The server starts recording as soon as a second person arrives, so everyone who
+    // came after that was never in the file: in the GRI call of 17-9-2026 Rachael joined eighteen
+    // seconds after the start and the 698 MB recording held one voice. The caller hands the live
+    // audio tracks of the room every second; a track not yet in the mix is connected, a track that
+    // has left the room (or ended, as a consumer does when it is rebuilt after a reconnect) is
+    // disconnected. The destination track the MediaRecorder holds stays the same throughout.
+    syncTracks(tracks) {
+        if (!this.audioContext || !this.audioDestination) return;
+        const live = tracks.filter((track) => track && track.kind === 'audio' && track.readyState === 'live');
+        const wanted = new Set(live.map((track) => track.id));
+        for (const [id, source] of this.sourcesByTrack) {
+            if (wanted.has(id)) continue;
+            source.disconnect();
+            this.audioSources = this.audioSources.filter((s) => s !== source);
+            this.sourcesByTrack.delete(id);
+            console.log('Mixed audio track left the recording --->', id);
+        }
+        live.forEach((track) => {
+            if (this.sourcesByTrack.has(track.id)) return;
+            const source = this.audioContext.createMediaStreamSource(new MediaStream([track]));
+            if (this.useGainNode && this.gainNode) {
+                source.connect(this.gainNode);
+            }
+            source.connect(this.audioDestination);
+            this.audioSources.push(source);
+            this.sourcesByTrack.set(track.id, source);
+            console.log('Mixed audio track joined the recording --->', track.id);
+        });
     }
 
     stopMixedAudioStream() {
@@ -64,6 +100,7 @@ class MixedAudioRecorder {
             });
             this.audioSources = [];
         }
+        this.sourcesByTrack = new Map();
         if (this.audioDestination) {
             this.audioDestination.disconnect();
             this.audioDestination = null;

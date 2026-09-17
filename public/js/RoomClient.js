@@ -8741,6 +8741,16 @@ class RoomClient {
             const audioMixerTracks = audioMixerStreams.getTracks();
             console.log('Audio mixer tracks --->', audioMixerTracks);
 
+            // bravio (MEET-73): keep the mix in step with who is in the room while recording runs.
+            clearInterval(this.recMixSyncTimer);
+            this.recMixSyncTimer = setInterval(() => {
+                try {
+                    this.audioRecorder?.syncTracks(this.getAudioStreamFromAudioElements().getAudioTracks());
+                } catch (err) {
+                    console.warn('Recording mix sync failed', err);
+                }
+            }, 1000);
+
             const recordingType = this.isMobileDevice ? 'camera' : document.getElementById('recordingTypeSelect').value;
             recordingType === 'screen'
                 ? this.startDesktopRecording(options, audioMixerTracks)
@@ -9235,6 +9245,8 @@ class RoomClient {
             }
             if (this.isMobileDevice) this.getId('swapCameraButton').className = '';
             this.event(_EVENTS.stopRec);
+            clearInterval(this.recMixSyncTimer);
+            this.recMixSyncTimer = null;
             this.audioRecorder.stopMixedAudioStream();
             this.recordingAction(enums.recording.stop);
             this.sound('recStop');
