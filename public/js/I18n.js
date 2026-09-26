@@ -394,11 +394,29 @@
         return m === 'native' || m === 'auto' || m === 'google' ? m : 'google';
     }
 
-    // Per-browser override (set via the in-room picker) wins over the server UI_LANGUAGE.
+    // bravio: the visitor's browser language, when we have a native translation for it (MEET-80).
+    // A guest from the United States joined a Dutch room on 25-9-2026 behind an English lobby,
+    // because UI_LANGUAGE=nl was the only thing read. The browser now comes before the server,
+    // the same rule as the cockpit's lobby: a Dutch browser, and one that names no language we
+    // translate, still gets UI_LANGUAGE.
+    function browserLang() {
+        try {
+            const tags = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language];
+            for (const tag of tags) {
+                const code = String(tag || '').toLowerCase().split('-')[0];
+                if (code === 'en' || LANG_DISPLAY[code]) return code;
+            }
+        } catch (e) {
+            // A browser that hides its languages keeps the server's.
+        }
+        return null;
+    }
+
+    // Per-browser override (set via the in-room picker) wins; then the browser; then UI_LANGUAGE.
     function resolveLang() {
         const override = getOverride();
         if (override && (override === 'en' || LANG_DISPLAY[override])) return override;
-        return configLang();
+        return browserLang() || configLang();
     }
 
     // In-room language picker (human-translated languages + English). Switches live without reload.
