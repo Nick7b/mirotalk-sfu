@@ -2379,7 +2379,14 @@ class RoomClient {
                 console.log('AUDIO ENABLE OPUS (channelCount: 2)');
                 params.codecOptions = {
                     opusStereo: true,
-                    opusDtx: true,
+                    // bravio: no DTX. With it, a browser stops sending whenever Opus thinks
+                    // nobody is talking, and the listener hears comfort noise in that gap. While
+                    // two people talk at once, the sender's echo canceller pushes the near voice
+                    // down far enough for that to happen mid-sentence: on 14-9 and 5-10-2026 every
+                    // speaker's stream had two to three and a half times as many gaps inside their
+                    // own speech during double talk, and the owner heard the other voice drop out
+                    // with a faint hiss (MEET-75). Sending through costs a few kbit/s of silence.
+                    opusDtx: false,
                     opusFec: true,
                     opusNack: true,
                 };
